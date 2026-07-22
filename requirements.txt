@@ -1,0 +1,6 @@
+streamlit
+pandas
+numpy
+numpy_financial
+joblib
+scikit-learn
