@@ -381,45 +381,69 @@ orchestrator = Orchestrator()
 # ----------------------------------------------------------------------
 # Sample book of clients (replace with real/uploaded data later)
 # ----------------------------------------------------------------------
-def get_sample_clients() -> List[Client]:
-    return [
-        Client(
-            client_id="CL2001", name="R. Sharma", age=34, monthly_income=120000,
-            monthly_spending=70000, risk_profile="Moderate",
-            goals=[{"name": "Home Down Payment", "target_amount": 2000000, "years": 5}],
-            holdings=[
-                Holding("Bajaj Flexi Cap", "Large Cap", 300000, 340000),
-                Holding("Bajaj Corporate Bond Fund", "Debt", 150000, 158000),
-            ],
-            transactions=[
-                Transaction(date(2026, 5, 12), "Redemption", "Bajaj Flexi Cap", 20000),
-                Transaction(date(2026, 6, 1), "SIP", "Bajaj Flexi Cap", 10000),
-            ],
-            bank_idle_cash=250000, is_hni=False, has_insurance=False,
-            sip_active=True, sip_missed_count_3m=1,
-        ),
-        Client(
-            client_id="CL2002", name="A. Verma", age=45, monthly_income=400000,
-            monthly_spending=150000, risk_profile="Aggressive",
-            goals=[{"name": "Retirement", "target_amount": 30000000, "years": 15}],
-            holdings=[Holding("Bajaj Large Cap Fund", "Large Cap", 800000, 760000)],
-            transactions=[Transaction(date(2026, 4, 3), "Redemption", "Bajaj Large Cap Fund", 100000)],
-            bank_idle_cash=1500000, is_hni=True, has_insurance=True,
-            sip_active=False, sip_missed_count_3m=2,
-        ),
-        Client(
-            client_id="CL2003", name="P. Nair", age=28, monthly_income=60000,
-            monthly_spending=25000, risk_profile="Aggressive",
-            goals=[{"name": "Wedding", "target_amount": 800000, "years": 2}],
-            holdings=[],
-            transactions=[],
-            bank_idle_cash=180000, is_hni=False, has_insurance=False,
-            sip_active=False, sip_missed_count_3m=0,
-        ),
-    ]
+@st.cache_data
+def load_clients_from_csv(csv_path: str = "fabricated_client_dataset.csv") -> List[Client]:
+    """
+    Loads the full fabricated dataset and reconstructs Client objects.
+    Since the CSV stores aggregated features (not raw holdings/transactions),
+    we build minimal synthetic holdings/transactions that reproduce the same
+    aggregate values, so client_to_feature_vector() still computes correctly.
+    """
+    df = pd.read_csv(csv_path)
+    clients = []
+
+    for _, row in df.iterrows():
+        holdings = []
+
+        # Reconstruct a Large Cap holding if large_cap_pct > 0
+        invested_total = float(row["invested_total"])
+        current_total = float(row["current_total"])
+
+        if row["large_cap_pct"] > 0 and current_total > 0:
+            lc_current = current_total * row["large_cap_pct"]
+            lc_invested = invested_total * row["large_cap_pct"] if invested_total else lc_current
+            holdings.append(Holding("Synthetic Large Cap Fund", "Large Cap", lc_invested, lc_current))
+
+        if row["has_debt"] == 1:
+            holdings.append(Holding("Synthetic Debt Fund", "Debt", 50000, 51000))
+
+        if row["has_elss"] == 1:
+            holdings.append(Holding("Synthetic ELSS Fund", "ELSS", 40000, 42000))
+
+        # Pad remaining holding slots (n_holdings) with a generic "Other" category
+        # so len(holdings) roughly matches n_holdings from the dataset
+        while len(holdings) < int(row["n_holdings"]):
+            holdings.append(Holding("Synthetic Other Fund", "Other", 30000, 30500))
+
+        # Reconstruct transactions to reproduce redemptions_90d and sip_missed_3m
+        transactions = []
+        for i in range(int(row["redemptions_90d"])):
+            transactions.append(Transaction(date(2026, 6, 1), "Redemption", "Synthetic Fund", 20000))
+        if row["sip_active"] == 1:
+            transactions.append(Transaction(date(2026, 6, 1), "SIP", "Synthetic Fund", 10000))
+
+        client = Client(
+            client_id=row["client_id"],
+            name=f"Client {row['client_id']}",
+            age=int(row["age"]),
+            monthly_income=float(row["income"]),
+            monthly_spending=float(row["income"]) * (1 - float(row["savings_rate"])),
+            risk_profile=row["risk_profile"],
+            goals=[{"name": "Wealth Creation", "target_amount": 1000000, "years": 5}],
+            holdings=holdings,
+            transactions=transactions,
+            bank_idle_cash=float(row["idle_cash"]),
+            is_hni=bool(row["is_hni"]),
+            has_insurance=bool(row["has_insurance"]),
+            sip_active=bool(row["sip_active"]),
+            sip_missed_count_3m=int(row["sip_missed_3m"]),
+        )
+        clients.append(client)
+
+    return clients
 
 if "clients" not in st.session_state:
-    st.session_state.clients = get_sample_clients()
+    st.session_state.clients = load_clients_from_csv("fabricated_client_dataset.csv")
 
 clients = st.session_state.clients
 
@@ -428,16 +452,26 @@ clients = st.session_state.clients
 # ----------------------------------------------------------------------
 st.sidebar.title("ATOM FinAI Agents")
 view = st.sidebar.radio("View", ["Customer Dashboard", "Distributor — Client View", "Distributor — Book View", "Add / Edit Client"])
-client_names = {c.client_id: c.name for c in clients}
+
+clients = st.session_state.clients
+
+search = st.sidebar.text_input("Search client ID")
+filtered_clients = [c for c in clients if search.upper() in c.client_id.upper()] if search else clients
+client_names = {c.client_id: c.name for c in filtered_clients}
+
+if not client_names:
+    st.sidebar.warning("No clients match that search.")
+    st.stop()
+
 selected_id = st.sidebar.selectbox(
     "Select client",
     options=list(client_names.keys()),
     format_func=lambda cid: f"{client_names[cid]} ({cid})",
+    key="selected_client_id",
 )
 selected_client = next(c for c in clients if c.client_id == selected_id)
 
-st.sidebar.markdown("---")
-st.sidebar.caption("Prototype for ATOM CEO's Challenge — models trained on a fabricated/synthetic dataset for demonstration purposes.")
+st.sidebar.caption(f"{len(clients)} clients in book ({len(filtered_clients)} shown)")
 
 # ----------------------------------------------------------------------
 # View: Customer Dashboard
@@ -463,7 +497,10 @@ if view == "Customer Dashboard":
         color = {"high": "🔴", "medium": "🟡", "low": "🟢"}[severity]
         st.metric("Risk Level", f"{color} {severity.upper()}", f"{ba['score']['confidence']*100:.1f}% confidence")
         st.bar_chart(pd.Series(ba["score"]["class_probabilities"]))
-        st.warning(ba["explanation"]) if severity == "high" else st.info(ba["explanation"])
+        if severity == "high":
+            st.warning(bal["explanation"])
+        else:
+            st.info(ba["explanation"])
 
     with col3:
         st.subheader("💡 Personalized Insights")
@@ -474,9 +511,6 @@ if view == "Customer Dashboard":
         else:
             st.success("No gaps flagged")
         st.info(ins["explanation"])
-
-    with st.expander("Raw JSON (for debugging / demo)"):
-        st.json(json.loads(json.dumps(result, default=str)))
 
 # ----------------------------------------------------------------------
 # View: Distributor — Client View
@@ -509,9 +543,6 @@ elif view == "Distributor — Client View":
         st.progress(min(max(score / 100, 0.0), 1.0))
         for reason in ph["score"]["reasons"]:
             st.write(f"- {reason}")
-
-    with st.expander("Raw JSON"):
-        st.json(json.loads(json.dumps(result, default=str)))
 
 # ----------------------------------------------------------------------
 # View: Distributor — Book View (batch across all clients)
@@ -557,7 +588,7 @@ elif view == "Add / Edit Client":
 
         submitted = st.form_submit_button("Add Client")
         if submitted:
-            new_id = f"CL{2000 + len(st.session_state.clients) + 1}"
+            new_id = f"NEWCL{len(st.session_state.clients) + 1}"
             new_client = Client(
                 client_id=new_id, name=name or "Unnamed Client", age=age,
                 monthly_income=income, monthly_spending=spending, risk_profile=risk_profile,
