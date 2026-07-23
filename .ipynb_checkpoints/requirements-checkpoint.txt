@@ -1,6 +1,6 @@
 streamlit
 pandas
 numpy
-numpy_finacial
+numpy_financial
 joblib
 scikit-learn
